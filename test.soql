@@ -1,0 +1,39 @@
+--
+-- SOQL doesn't allow comments, but we allow them in sfio. We strip out lines
+-- that start with two dashes (--) from SOQL query files. We also strip out
+-- empty lines. You are welcome.
+--
+
+select Id, Name from Account
+
+--
+-- If you have large SOQL and you would rather just run it on the command line,
+-- you can use 'read' and a Here document.
+--
+-- https://en.wikipedia.org/wiki/Here_document
+--
+-- read -r -d '' SOQL <<'EOF'
+--   select
+--     Id,
+--     Name,
+--     Account.Name,
+--     CloseDate,
+--     Amount,
+--     Many,
+--     More,
+--     Fields,
+--     Here,
+--     Maybe,
+--     You,
+--     Have,
+--     A,
+--     Long,
+--     List
+--   from
+--     Opportunity
+--   where
+--     Amount > 100
+--     and CloseDate > 2017-01-01
+-- EOF
+--
+-- sf-query "$SOQL"

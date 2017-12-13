@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+
+'use strict';
+
+/*
+
+  STATUS: In process.
+
+  So this is one of the huge reasons to use the new Bulk API 2.0. This old
+  Bulk API doesn't have success and error files. It just has request and
+  result files. The result file is ordered same as the request file and
+  looks like:
+
+  Id                  Success   Created   Error
+  0012900000DnTKGAA3  FALSE     FALSE     Some error info
+  0012900000DnTKHAA3  TRUE      TRUE
+
+  To make things even more interesting, if Salesforce stops processing a batch
+  at some point, the remaining rows just aren't in the result file.
+
+*/
+
+const csvAppendStream = require('csv-append-stream');
+const {
+  beHelpful,
+  basename
+} = require('./shared');
+
+// https://developer.salesforce.com/docs/atlas.en-us.api_asynch.meta/api_asynch/asynch_api_batches_interpret_status.htm
+
+function helpAndExit(error) {
+  error = error ? `\n  ERROR: ${error}\n` : '';
+  console.error(`${error}
+  Usage: ${basename(__filename)} JOB_ID [noErrorColumn] [noError] [noUnprocessed]
+
+  Outputs errors and unprocessed records for the given job to STDOUT.
+
+  When a job fails there may be records that were attempted
+  and failed. There also may be records that were just skipped.
+
+  Errors were attempted and failed.
+  These will have some value in the error column.
+
+  Unprocessed were skipped for some reason. It could be
+  because of timeout issues, too many locks, etc. These
+  won't have a value in the error column.
+`);
+  process.exit(error ? 13 : 0);
+}
+
+beHelpful(helpAndExit);
+
+let jobId = process.argv[2];
+let noErrorColumn = false;
+let noError = false;
+let noUnprocessed = false;
+
+function doOptionals() {
+  for (const v of process.argv) {
+    if (v.toLowerCase() === 'noerrorcolumn') {
+      noErrorColumn = true;
+    }
+    if (v.toLowerCase() === 'noerrors') {
+      noError = true;
+    }
+    if (v.toLowerCase() === 'nounprocessed') {
+      noUnprocessed = true;
+    }
+  }
+}
+
+doOptionals();
+
+const {
+  Transform
+} = require('stream');
+
+class Result extends Transform {
+  constructor() {
+    super({
+      objectMode: true
+    });
+  }
+  _transform(result, encoding, cb) {
+    this.cb = cb;
+    this.result = result;
+  }
+  _flush(cb) {
+    this.done = true;
+    cb();
+  }
+  pop(cb) {
+    let thisCb = this.cb;
+    if (thisCb) {
+      this.cb = null;
+      cb(null, this.result);
+      thisCb();
+    } else {
+      if (this.done) {
+        cb();
+      } else {
+        var iid = setInterval(() => {
+          thisCb = this.cb;
+          if (thisCb) {
+            this.cb = null;
+            clearInterval(iid);
+            cb(null, this.result);
+            thisCb();
+          } else if (this.done) {
+            clearInterval(iid);
+            cb();
+          }
+        }, 0);
+      }
+    }
+  }
+}
+
+class Request extends Transform {
+  constructor(stack) {
+    super({
+      objectMode: true
+    });
+    this.stack = stack;
+  }
+  _transform(request, encoding, cb) {
+    this.stack.pop((error, result) => {
+      if (result && result.Success === 'true') {
+        cb();
+      } else {
+        if (!noErrorColumn) {
+          request.Error = result && result.Error;
+        }
+        if (noError && result && result.Error) {
+          request = null;
+        }
+        if (noUnprocessed && !result) {
+          request = null;
+        }
+        cb(null, request);
+      }
+    });
+  }
+}
+
+const BulkApi = require('sf-bulk-api');
+const options = require('../sfio-config').source;
+const api = new BulkApi(options);
+
+async function getBatchErrors(batchId, jobId) {
+  let request = api.getBatchRequest(batchId, jobId);
+  let result = api.getBatchResult(batchId, jobId);
+  let all = await Promise.all([request, result]);
+  let stack = new Result();
+  all[1]
+    .pipe(require('csv-parse')({
+      columns: true
+    }))
+    .pipe(stack);
+  return all[0]
+    .pipe(require('csv-parse')({
+      columns: true
+    }))
+    .pipe(new Request(stack))
+    .pipe(require('csv-stringify')({
+      header: true
+    }));
+}
+
+async function getAllErrors() {
+  // Need to call getBatchInfoList so api has batchInfos.
+  await api.getBatchInfoList(jobId);
+  let streams = [];
+  for (let bi of api.batchInfos) {
+    if (bi.state === 'Failed' || bi.numberRecordsFailed > 0) {
+      streams.push(getBatchErrors(bi.id, jobId));
+    }
+  }
+  streams = await Promise.all(streams);
+  //console.log(streams);
+  csvAppendStream(streams).pipe(process.stdout);
+}
+
+getAllErrors()
+  .catch(err => console.error(err));

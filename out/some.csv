@@ -1,0 +1,7 @@
+Account
+Id,
+  Name,
+  CloseDate,
+  Amount
+  EOF
+limit 100

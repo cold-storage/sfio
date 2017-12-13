@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+
+'use strict';
+
+const {
+  basename,
+  beHelpful
+} = require('./shared');
+
+// STATUS WAYYYY ROUGH!!!!!
+
+function helpAndExit() {
+  console.error(`
+Usage: ${basename(__filename)} OBJECT
+
+    Inserts CSV formatted data into Salesforce.
+
+    Reads from STDIN.
+
+    If the data is uploaded successfully we write the
+    JOB_ID to STDOUT.
+`);
+  process.exit(13);
+}
+
+beHelpful(helpAndExit);
+
+const BulkApi = require('sf-bulk-api');
+const options = require('../sfio-config').dest;
+options.object = process.argv[2];
+options.operation = 'insert';
+const api = new BulkApi(options);
+
+async function doit() {
+  await api.addBatch(process.stdin);
+  console.error(api.jobId);
+}
+
+doit();

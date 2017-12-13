@@ -1,0 +1,142 @@
+#!/usr/bin/env node
+
+'use strict';
+
+/*
+
+  STATUS: not extensive battle tested yet, but should be pretty stable.
+  We are waiting on the following TODOs from sf-bulk-api.
+
+  TODO !!! XXX Handle PK chunking 'Records not found for this query' header
+  row!!!
+
+  TODO !!! XXX Handle stream errors. Thinking of adding error handler to
+  all streams where BulkApi emits an error even that clients can catch.
+
+*/
+
+const fs = require('fs');
+const {
+  beHelpful
+} = require('./shared');
+const {
+  basename
+} = require('path');
+
+function helpAndExit(error) {
+  error = error ? `\n  ERROR: ${error}\n` : '';
+  console.error(`${error}
+  Usage: ${basename(__filename)} SOQL [pkChunking] [queryAll]
+
+  Export Salesforce CSV data using SOQL query. Writes to STDOUT.
+
+  Examples
+
+    sf-query 'select Id, Name from Account'
+    sf-query test.soql
+    sf-query test.soql pkChunking
+    sf-query test.soql queryAll
+    sf-query test.soql pkChunking queryAll
+
+  https://developer.salesforce.com/docs/atlas.en-us.api_asynch.meta/api_asynch/asynch_api_using_bulk_query.htm
+`);
+  process.exit(error ? 13 : 0);
+}
+
+beHelpful(helpAndExit);
+
+let soql = process.argv[2];
+let object = null;
+let pkChunking = false;
+let queryAll = false;
+
+function getSoqlFromFile() {
+  let a = soql.split(/\s+/g);
+  if (a[0].toLowerCase() !== 'select') {
+    soql = fs.readFileSync(a[0]).toString();
+  }
+  // Remove comment lines (lines starting with --) and blank lines.
+  const lines = soql.split('\n');
+  for (var i = lines.length - 1; i >= 0; --i) {
+    lines[i] = lines[i].trim();
+    if (lines[i].startsWith('--') || lines[i] === '') {
+      lines.splice(i, 1);
+    }
+  }
+  soql = lines.join('\n');
+  // console.error(soql);
+  // process.exit();
+}
+
+function parseOutObject() {
+  let a = soql.split(/\s+/g);
+  let objectIsNext = false;
+  for (const t of a) {
+    if (objectIsNext) {
+      return object = t;
+    }
+    if (t.toLowerCase() === 'from') {
+      objectIsNext = true;
+    }
+  }
+}
+
+function setPkChunkAndQueryAll() {
+  for (const v of process.argv) {
+    if (v.toLowerCase() === 'pkchunking') {
+      pkChunking = true;
+    }
+    if (v.toLowerCase() === 'queryall') {
+      queryAll = true;
+    }
+  }
+}
+
+getSoqlFromFile();
+parseOutObject();
+setPkChunkAndQueryAll();
+
+const BulkApi = require('sf-bulk-api');
+const options = require('../sfio-config').source;
+options.object = object;
+options.operation = queryAll ? 'queryAll' : 'query';
+options.pkChunking = pkChunking;
+const api = new BulkApi(options);
+
+function delay(t) {
+  return new Promise(function(resolve) {
+    setTimeout(resolve, t);
+  });
+}
+
+async function waitForJobToComplete() {
+  for (let done = false; !done;) {
+    await delay(2000);
+    const jobInfo = await api.getJobInfo();
+    const success = api.numberBatchesCompleted === api.numberBatchesTotal &&
+      api.numberBatchesFailed === 0 &&
+      api.numberRecordsFailed === 0;
+    if (success) {
+      await api.closeJob();
+      done = true;
+    }
+    const failure = api.numberBatchesFailed > 0 || api.numberBatchesFailed > 0;
+    if (failure) {
+      await api.abortJob();
+      throw new Error(jobInfo);
+    }
+  }
+}
+
+async function doQuery() {
+  await api.addBatch(soql);
+  await waitForJobToComplete();
+  const stream = await api.getQueryResults();
+  stream.pipe(process.stdout);
+}
+
+doQuery()
+  .catch((err) => {
+    console.error(err.stack || err);
+    process.exit(3);
+  });
