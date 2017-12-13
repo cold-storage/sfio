@@ -75,15 +75,15 @@ const {
   Transform
 } = require('stream');
 
-class Result extends Transform {
+class PopStream extends Transform {
   constructor() {
     super({
       objectMode: true
     });
   }
-  _transform(result, encoding, cb) {
+  _transform(object, na, cb) {
     this.cb = cb;
-    this.result = result;
+    this.object = object;
   }
   _flush(cb) {
     this.done = true;
@@ -93,7 +93,7 @@ class Result extends Transform {
     let thisCb = this.cb;
     if (thisCb) {
       this.cb = null;
-      cb(null, this.result);
+      cb(null, this.object);
       thisCb();
     } else {
       if (this.done) {
@@ -104,7 +104,7 @@ class Result extends Transform {
           if (thisCb) {
             this.cb = null;
             clearInterval(iid);
-            cb(null, this.result);
+            cb(null, this.object);
             thisCb();
           } else if (this.done) {
             clearInterval(iid);
@@ -151,17 +151,17 @@ async function getBatchErrors(batchId, jobId) {
   let request = api.getBatchRequest(batchId, jobId);
   let result = api.getBatchResult(batchId, jobId);
   let all = await Promise.all([request, result]);
-  let stack = new Result();
+  let popStream = new PopStream();
   all[1]
     .pipe(require('csv-parse')({
       columns: true
     }))
-    .pipe(stack);
+    .pipe(popStream);
   return all[0]
     .pipe(require('csv-parse')({
       columns: true
     }))
-    .pipe(new Request(stack))
+    .pipe(new Request(popStream))
     .pipe(require('csv-stringify')({
       header: true
     }));
